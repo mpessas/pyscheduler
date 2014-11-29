@@ -5,6 +5,7 @@ Listen on TCP socket and act on messages.
 """
 
 import socket
+from .types import Payload
 
 
 def init_socket(host, port):
@@ -30,3 +31,7 @@ def read(sock):
 
 def close_socket(sock):
     sock.close()
+
+
+def handle_request(fd, klass=Payload):
+    return klass.from_payload(read(fd))
