@@ -4,9 +4,13 @@
 
 from functools import partial
 import selectors
+import signal
+
+import linuxfd
+
 from .log import logger
 from .scheduler import Scheduler
-from .tcpserver import init_socket, handle_request
+from .tcpserver import init_socket, handle_request, close_socket
 
 
 def run(host, port, Payload):
@@ -17,15 +21,28 @@ def run(host, port, Payload):
     :param Payload: A class that follows the interface of ``types.Payload``.
 
     """
+    scheduler = Scheduler()
 
     sock = init_socket('127.0.0.1', 8000)
     selector = selectors.DefaultSelector()
     callback = partial(handle_request, klass=Payload)
     selector.register(sock, selectors.EVENT_READ, callback)
 
-    scheduler = Scheduler()
+    sigint_fd = linuxfd.signalfd(
+        signalset={signal.SIGINT, signal.SIGTERM}, nonBlocking=True
+    )
+    selector.register(sigint_fd, selectors.EVENT_READ, True)
+    sighup_fd = linuxfd.signalfd(signalset={signal.SIGHUP}, nonBlocking=True)
+    selector.register(sighup_fd, selectors.EVENT_READ, scheduler.report)
+    signal.pthread_sigmask(
+        signal.SIG_BLOCK, {signal.SIGINT, signal.SIGHUP, signal.SIGTERM}
+    )
+
     timeout = None
+    should_exit = False
     while True:
+        if should_exit:
+            break
         logger.debug('Selecting on timeout {0}'.format(timeout))
         events = selector.select(timeout)
         if not events:
@@ -34,6 +51,13 @@ def run(host, port, Payload):
             timeout = getattr(scheduler.top(), 'timestamp', None)
         for key, mask in events:
             callback = key.data
-            item = callback(key.fileobj)
-            scheduler.push(item)
-            timeout = scheduler.top().timestamp
+            if not callable(callback):
+                should_exit = True
+            elif key.fileobj == sock:
+                item = callback(key.fileobj)
+                scheduler.push(item)
+                timeout = scheduler.top().timestamp
+            else:
+                key.fileobj.read()
+                callback()
+    close_socket(sock)
