@@ -5,6 +5,7 @@
 from functools import partial
 import selectors
 import signal
+import time
 
 import linuxfd
 
@@ -38,17 +39,22 @@ def run(host, port, Payload):
         signal.SIG_BLOCK, {signal.SIGINT, signal.SIGHUP, signal.SIGTERM}
     )
 
-    timeout = None
+    timestamp = None
     should_exit = False
     while True:
         if should_exit:
             break
+        if timestamp is None:
+            timeout = timestamp
+        else:
+            timeout = timestamp - time.time()
+            assert timeout >= 0
         logger.debug('Selecting on timeout {0}'.format(timeout))
         events = selector.select(timeout)
         if not events:
             item = scheduler.pop()
             item.execute()
-            timeout = getattr(scheduler.top(), 'timestamp', None)
+            timestamp = getattr(scheduler.top(), 'timestamp', None)
         for key, mask in events:
             callback = key.data
             if not callable(callback):
@@ -56,7 +62,7 @@ def run(host, port, Payload):
             elif key.fileobj == sock:
                 item = callback(key.fileobj)
                 scheduler.push(item)
-                timeout = scheduler.top().timestamp
+                timestamp = scheduler.top().timestamp
             else:
                 key.fileobj.read()
                 callback()
